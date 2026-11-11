@@ -1,0 +1,188 @@
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: homeassistant
+    depends_on:
+      - matter-server
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+    restart: always
+    # ports:
+      # - "8123:8123"
+    # privileged: true
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:unconfined
+    volumes:
+      - ./homeassistant/config:/config
+      - /run/dbus:/run/dbus:ro
+    network_mode: host
+    healthcheck:
+      test: 'curl -m 90 -sLf http://localhost:8123 || date >> /config/healthcheck'
+      interval: 90s
+      timeout: 60s
+      retries: 2
+
+  # MQTT Broker
+  mqtt:
+    profiles: ["disabled"]
+    image: eclipse-mosquitto
+    container_name: mosquitto
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+    ports:
+      - "1883:1883" #default mqtt port
+      - "8883:8883" #default mqtt tls port
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:unconfined
+    volumes:
+      - ./mosquitto/config:/mosquitto/config                   # Need to disable config folder on first launch. So, mosquitto can create its own default config file first.
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+      - ./mosquitto/certs:/mosquitto/certs
+    user: "${USER_ID}:${GROUP_ID}"
+
+  freeradius:
+    image: freeradius/freeradius-dev:v3.2.x
+    container_name: freeradius
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+    ports:
+     - "1812:1812/udp"
+     - "1813:1813/udp"
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:unconfined
+    volumes:
+    - ./freeradius/config/freeradius/clients.conf:/etc/freeradius/clients.conf:ro
+    - ./freeradius/config/freeradius/radiusd.conf:/etc/freeradius/radiusd.conf:ro
+    - ./freeradius/config/freeradius/certs:/etc/freeradius/certs:ro
+    - ./freeradius/config/freeradius/mods-config/files/authorize:/etc/freeradius/mods-config/files/authorize:ro
+    - ./freeradius/config/freeradius/mods-available/eap:/etc/freeradius/mods-available/eap:ro
+      #- ./freeradius/config/freeradius/mods-enabled/inner-eap:/etc/freeradius/mods-enabled/inner-eap:ro
+    - ./freeradius/logs:/var/log/freeradius
+    restart: always
+    # For debugging in "docker logs -f freeradius". Will not output to radius.log.
+    command: ["freeradius", "-Xxx", "-t"]
+
+  apache2:
+    image: ubuntu/apache2:latest
+    container_name: "apache2"
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+      - SERVER_HOSTNAME=${HOST_IP}
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./apache2/certs/ca.pem:/etc/apache2/certs/ca.pem:ro
+      - ./apache2/certs/server.pem:/etc/apache2/certs/server.pem:ro
+      - ./apache2/certs/server.key:/etc/apache2/certs/server.key:ro
+      - ./apache2/sites-enabled/apache2_ssl.conf:/etc/apache2/sites-enabled/apache2_ssl.conf:ro
+      - ./apache2/html:/var/www/html:ro
+    restart: always
+    networks:
+      default:
+        ipv4_address: 172.24.0.222
+    command:
+      - /bin/bash
+      - -c
+      - |
+        a2enmod headers rewrite ssl
+        apache2-foreground
+
+  emqx:
+    container_name: emqx
+    image: emqx/emqx-enterprise:latest
+    restart: unless-stopped
+    user: "${USER_ID}:${GROUP_ID}"
+    environment:
+      - PUID=${USER_ID}
+      - PGID=${GROUP_ID}
+      - TZ=${TIMEZONE}
+      - HOME=/home/emqx
+      - EMQX_NODE__NAME=emqx@127.0.0.1
+      - EMQX_NODE__COOKIE=${EMQX_NODE_COOKIE}
+      - EMQX_DASHBOARD__DEFAULT_PASSWORD=${EMQX_ADMIN_PASSWORD}
+      - EMQX_LOG__CONSOLE__LEVEL=warning
+    ulimits:
+      nofile: { soft: 1048576, hard: 1048576 }
+      nproc:  4096
+    pids_limit: 8192
+    mem_limit: 768m
+    cpus: "2.0"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid
+      - /run:size=8m,mode=0755,noexec,nosuid
+      - /home/emqx:size=4m,mode=0700,uid=${USER_ID},gid=${GROUP_ID}
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    configs:
+      - source: emqx_conf
+        target: /opt/emqx/etc/emqx.conf
+      - source: acl_conf
+        target: /opt/emqx/etc/acl.conf
+      - source: bootstrap_csv
+        target: /opt/emqx/etc/auth-built-in-db-bootstrap.csv
+    volumes:
+      - ./emqx/data:/opt/emqx/data
+      - ./emqx/log:/opt/emqx/log
+      - ./emqx/certs/ca.crt:/opt/emqx/certs/ca.crt:ro
+      - ./emqx/certs/server.crt:/opt/emqx/certs/server.crt:ro
+      - ./emqx/certs/server.key:/opt/emqx/certs/server.key:ro
+    ports:
+      - "1883:1883"
+      - "8883:8883"
+      - "9001:9001"
+      - "18083:18083"
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  emqx-init:
+    image: curlimages/curl:latest
+    restart: "no"
+    user: "${USER_ID}:${GROUP_ID}"
+    depends_on:
+      emqx: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "/init/init.sh"]
+    volumes:
+      - ./emqx/init:/init:ro
+    environment:
+      - ADMIN_PASSWORD=${EMQX_ADMIN_PASSWORD}
+      - HOME=/tmp
+    tmpfs:
+      - /tmp:size=8m,mode=1777,uid=${USER_ID},gid=${GROUP_ID}
+
+configs:
+  emqx_conf:
+    file: ./emqx/config/emqx.conf
+  acl_conf:
+    file: ./emqx/config/acl.conf
+  bootstrap_csv:
+    file: ./emqx/config/auth-built-in-db-bootstrap.csv
+
+networks:
+  default:
+    name: nas-network
+    #enable_ipv6: true
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.24.0.0/16
+          gateway: 172.24.0.1

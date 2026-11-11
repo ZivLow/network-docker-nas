@@ -1,0 +1,30 @@
+/secrets
+.env
+
+# apache2
+/apache2/*
+!/apache2/.gitkeep
+
+# emqx
+/emqx/*
+!/emqx/config/
+!/emqx/config/*
+!/emqx/init/
+!/emqx/init/*
+
+# freeradius
+/freeradius/*
+!/freeradius/.gitkeep
+
+# homeassistant
+/homeassistant/*
+!/homeassistant/.gitkeep
+
+# Matter Server (for home assistant)
+/matter-server/data/*
+!/matter-server/docker-compose.yml
+!/matter-server/.gitkeep
+
+# mosquitto
+/mosquitto/*
+!/mosquitto/.gitkeep
